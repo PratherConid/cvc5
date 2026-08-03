@@ -461,13 +461,11 @@ The Farkas certificate is that last identity cleared of fractions:
 *Which function performs a pivot.* All four pivots go through a single function,
 `LinearEqualityModule::pivotAndUpdate` (`linear_equality.cpp:287`). Captured with:
 ```bash
-gdb --batch -x piv4.gdb --args ./build/bin/cvc5 workdocs/smt_files/pivot_4.smt
-# piv4.gdb:
-#   set breakpoint pending on
-#   set confirm off
-#   break cvc5::internal::theory::arith::linear::LinearEqualityModule::pivotAndUpdate
-#   run
-#   bt              # full depth
+gdb --batch \
+  -ex "set breakpoint pending on" -ex "set confirm off" \
+  -ex "break cvc5::internal::theory::arith::linear::LinearEqualityModule::pivotAndUpdate" \
+  -ex "run" -ex "bt" \
+  --args ./build/bin/cvc5 workdocs/smt_files/pivot_4.smt
 ```
 
 *Call stack at the first pivot* (`x_i=2 -> x_j=0`), outermost first (line numbers
@@ -631,6 +629,94 @@ except `(assert (>= (+ (* 2 x) (* 3 y)) 1))` gives `sat` with `bb = 1` — simpl
 parks `x` at `1/2` and splits `x <= 0` / `x = 1` / `x >= 2`. Useful as the
 smallest possible trigger, but branching is not load-bearing there since the
 problem is satisfiable.
+
+**Findings on the branch and bound example**
+
+*Which function performs a branch.* The split is built by
+`BranchAndBound::branchIntegerVariable` (`branch_and_bound.cpp:41`), reached
+through `TheoryArithPrivate::roundRobinBranch`. Note the two live in **different
+namespaces** — `theory::arith` for `BranchAndBound`, `theory::arith::linear` for
+`TheoryArithPrivate`. Captured with:
+```bash
+gdb --batch \
+  -ex "set breakpoint pending on" -ex "set confirm off" \
+  -ex "break cvc5::internal::theory::arith::BranchAndBound::branchIntegerVariable" \
+  -ex "run" -ex "bt" \
+  --args ./build/bin/cvc5 workdocs/smt_files/branch_bound.smt
+```
+
+*Call stack at the branch,* outermost first (line numbers as of `e8c0387ca`):
+```
+main                                        main/main.cpp:37
+runCvc5                                     main/driver_unified.cpp:243
+PortfolioDriver::solve                      main/portfolio_driver.cpp:564
+ExecutionContext::solveContinuous           main/portfolio_driver.cpp:66
+CommandExecutor::doCommand                  main/command_executor.cpp:118
+CommandExecutor::doCommandSingleton         main/command_executor.cpp:129
+CommandExecutor::solverInvoke               main/command_executor.cpp:239
+Cmd::invokeAndPrintResult                   parser/commands.cpp:133
+CheckSatCommand::invoke                     parser/commands.cpp:369
+Solver::checkSat                            api/cpp/cvc5.cpp:7299
+SolverEngine::checkSat                      smt/solver_engine.cpp:785
+SolverEngine::checkSatInternal              smt/solver_engine.cpp:822
+SmtDriver::checkSat                         smt/smt_driver.cpp:79
+SmtDriverSingleCall::checkSatNext           smt/smt_driver.cpp:171
+SmtSolver::checkSatInternal                 smt/smt_solver.cpp:134
+PropEngine::checkSat                        prop/prop_engine.cpp:490
+MinisatSatSolver::solve                     prop/minisat/minisat.cpp:223
+SimpSolver::solve                           prop/minisat/simp/SimpSolver.h:275
+SimpSolver::solve_                          prop/minisat/simp/SimpSolver.cc:151
+Solver::solve_                              prop/minisat/core/Solver.cc:1756
+Solver::search                              prop/minisat/core/Solver.cc:1491
+Solver::propagate                           prop/minisat/core/Solver.cc:1163
+Solver::theoryCheck                         prop/minisat/core/Solver.cc:1271
+TheoryProxy::theoryCheck                    prop/theory_proxy.cpp:271
+TheoryEngine::check                         theory/theory_engine.cpp:468
+Theory::check                               theory/theory.cpp:600
+TheoryArith::postCheck                      theory/arith/theory_arith.cpp:255
+LinearSolver::postCheck                     theory/arith/linear/linear_solver.cpp:79
+TheoryArithPrivate::postCheck               theory/arith/linear/theory_arith_private.cpp:3969
+TheoryArithPrivate::roundRobinBranch        theory/arith/linear/theory_arith_private.cpp:4130
+TheoryArithPrivate::branchIntegerVariable   theory/arith/linear/theory_arith_private.cpp:4065
+BranchAndBound::branchIntegerVariable       theory/arith/branch_and_bound.cpp:43
+```
+
+*Three differences from the pivot stack,* all of which explain when integer
+reasoning is reachable at all:
+
+| | pivot run | branch run |
+|---|---|---|
+| effort level | `EFFORT_STANDARD` | **`EFFORT_FULL`** |
+| `Solver::propagate` type | `CHECK_WITH_THEORY` (`Solver.cc:1186`) | **`CHECK_FINAL`** (`Solver.cc:1163`) |
+| divergence inside `postCheck` | `:3670` -> `solveRealRelaxation` | `:3969` -> `roundRobinBranch` |
+
+The first two are the same fact seen from two sides: MiniSat only asks for a
+full-effort theory check once propagation has saturated, and full effort is
+precisely what the `fulleffort 1` half of the guard requires. So branch and bound
+is not reachable on the propagation path at all — it lives on the final check.
+The third shows that both mechanisms hang off the *same* `postCheck` frame, just
+at different call sites: simplex earlier in the function, branching later, after
+the guard.
+
+*Inside `branchIntegerVariable`.* It receives the variable and its fractional
+value (`y` and `1/3` here) and computes `floor`, `ceiling`, and the `nearest` of
+the two. With `brabTest` enabled it builds a three-way split around `nearest`:
+```
+ub    = rewrite(var <= nearest - 1)
+lb    = rewrite(var >= nearest + 1)
+right = (or ub lb)
+eq    = rewrite(var = nearest)
+lemma = (or eq right)
+```
+which is the trichotomy printed by `-t arith::lemma`. The equality disjunct is
+tried first — the comment in the source calls this "prioritize trying a simple
+rounding of the real solution" — with plain branch and bound as the fallback.
+
+*Counters.* `roundRobinBranch` is called from a `do`/`while` loop in `postCheck`
+that retries lemmas until one is accepted by the output channel;
+`d_externalBranchAndBounds` is incremented once per round of that loop, not once
+per lemma. `d_cutCount` is bumped alongside it. The per-lemma outcome is visible
+only through `-t arith-round-robin` (`..success lemma` / `..failed lemma`).
 
 *Observing branch and bound:*
 ```bash
