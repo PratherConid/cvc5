@@ -1,0 +1,6 @@
+(declare-const x Int)
+(declare-const y Int)
+(assert (<= (+ x y) 6))
+(assert (>= x 4))
+(assert (>= y 4))
+(check-sat)
