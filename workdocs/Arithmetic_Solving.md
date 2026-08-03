@@ -109,6 +109,51 @@ the whole walk:
   creation order, and `GDB.md` has the `asNode` recipe for turning an id back
   into a term.
 
+*Tracing branch and bound.* Integer reasoning runs only when the guard at
+`theory_arith_private.cpp:3901` passes, and plain `-t arith` reports that guard
+on every check:
+  ```
+  integer?  conf/split C fulleffort F
+  ```
+  Branching is attempted only when `C = 0` (nothing conflicting or split yet) and
+  `F = 1` (full effort). A run whose lines all read `conf/split 1` or
+  `fulleffort 0` did no integer reasoning at all — that is the case for
+  `basic_conflict.smt`, and `conf/split 0 fulleffort 1` is what
+  `branch_bound.smt` shows instead. This line is the fastest way to tell whether
+  a problem even reaches the integer machinery.
+
+  Once the guard passes:
+* `-t arith-round-robin` follows the loop that hands out branch lemmas:
+  ```
+  Round robin branch...
+  ...consider 1 lemmas
+  ..success lemma
+  ```
+  `..failed lemma` means the output channel rejected that lemma and the next
+  candidate is tried; `..already failed lemma` is the loop's termination check.
+* `-t arith::lemma` prints the split itself, as a trichotomy on one variable
+  built by `BranchAndBound::branchIntegerVariable`:
+  ```
+  rrbranch lemma  (or (and (not (>= y 1)) (>= y 0)) (or (not (>= y 0)) (>= y 1)))
+  ```
+  which reads `y <= -1` or `y = 0` or `y >= 1`.
+* `-t arith` shows both the fractional assignment that provoked the split
+  (`update 1: (0,0)|-> (1/3,0)`) and, afterwards, the branch bound being asserted
+  (`AssertUpper(1 (0,0))`) as the first case is explored.
+
+  On the statistics side, `theory::arith::externalBranchAndBounds` counts branch
+  rounds, and the `inferencesLemma` histogram distinguishes *which* integer
+  mechanism fired — `ARITH_BB_LEMMA` (branch and bound), `ARITH_DIO_CUT`
+  (Diophantine solver), `ARITH_SPLIT_DEQ` (disequality split). That distinction
+  matters: a problem can be integer-infeasible and still show `bb = 0` because
+  bound tightening or the rewriter disposed of it first.
+
+  In gdb, break on
+  `cvc5::internal::theory::arith::BranchAndBound::branchIntegerVariable` for the
+  split construction, or
+  `cvc5::internal::theory::arith::linear::TheoryArithPrivate::roundRobinBranch`
+  for the caller that picks which variable to branch on.
+
 **Following a Simple Example**
 * CVC5: CVC5 debug build built from source, commit `1a010c72cf64ee0c4469eb770f54a689d4820d3f`
   ```bash
@@ -508,3 +553,87 @@ compensating change applied to the *entering* variable `x_j`.
 *Iteration budget.* The backtrace shows `remainingIterations` counting down
 `199, 198, 197, 196` across the four pivots, so this call started with a budget of
 200. That is the cap that would truncate a longer walk.
+
+**A minimal example that requires branch and bound**
+
+`smt_files/branch_bound.smt` — two variables, four assertions:
+```
+(set-logic QF_LIA)
+(declare-const x Int)
+(declare-const y Int)
+(assert (>= (+ (* 2 x) (* 3 y)) 1))
+(assert (<= (+ (* 2 x) (* 3 y)) 2))
+(assert (>= x 0))
+(assert (<= x 0))
+(check-sat)
+```
+Measured: `unsat`, with `theory::arith::externalBranchAndBounds = 1`,
+`inferencesLemma = { ARITH_BB_LEMMA: 1, ARITH_UNATE: 2 }` and
+`inferencesConflict = { ARITH_CONF_SIMPLEX: 2 }` — one branch lemma, and the two
+branches it creates each refuted by simplex. No Diophantine cut is involved, so
+the branching is genuinely doing the work.
+
+*Geometric picture.* The strip `1 <= 2x + 3y <= 2` cut by the line `x = 0` is the
+segment `y` in `[1/3, 2/3]`. That segment is nonempty over the reals and empty
+over the integers, which is exactly the situation branch and bound exists for:
+the relaxation is satisfiable, so no amount of reasoning over the rationals can
+refute the problem.
+
+*What the solver does* (`-t arith -t arith::lemma`):
+```
+AssertLower(2 (1,0))            row 2 = 2x + 3y, lower bound 1
+AssertUpper(2 (2,0))            ... and upper bound 2
+AssertLower(0 (0,0))            x pinned: lower bound 0
+AssertUpper(0 (0,0))            ... and upper bound 0
+update 1: (0,0)|-> (1/3,0)      y := 1/3
+integer?  conf/split 0 fulleffort 1
+rrbranch lemma  (or (and (not (>= y 1)) (>= y 0)) (or (not (>= y 0)) (>= y 1)))
+```
+With `x` pinned at 0 the row reduces to `3y in [1,2]`, so simplex assigns
+`y = 1/3`. That is a perfectly good *rational* model, so no conflict is raised —
+but `hasIntegerModel()` is false. This is the one place in these notes where the
+guard at `theory_arith_private.cpp:3901` actually passes: the trace line reads
+`conf/split 0 fulleffort 1`, against `conf/split 1 fulleffort 0` in
+`basic_conflict.smt`, where the integer machinery never ran. `roundRobinBranch()`
+then emits a trichotomy split on `y` at 0 — `y <= -1` or `y = 0` or `y >= 1` —
+and each branch conflicts with the strip.
+
+*Why it is minimal.* Each ingredient was checked against a counterexample; `bb`
+is `externalBranchAndBounds`:
+
+| variant | result | bb | why it does not work |
+|---|---|---|---|
+| `(>= (* 2 x) 1)` — one variable | sat | 0 | the row `2x` is integral, so the fractional bound is rounded to `2x >= 2` and the model is integral immediately |
+| `(>= (+ (* 2 x) (* 2 y)) 1)` | sat | 0 | `gcd(2,2) = 2` divides the row, which is therefore integral; bound tightened to `>= 2` |
+| `(>= (- (* 3 y) (* 3 x)) 1)` plus `(<= ... 2)` | unsat | 0 | same — integral row, tightened straight into a conflict, no branching needed |
+| `(= (+ (* 4 x) (* 6 y)) 1)` | unsat | 0 | the rewriter's gcd test folds it to `false`; there are **no `setupVariable` lines at all**, so the theory never runs |
+| replacing the two `x` bounds with `(= x 0)` | unsat | 0 | preprocessing substitutes `x` away, collapsing the problem to one variable |
+| the strip plus **one** bound — `(>= x 0)`, `(<= x 0)` or `(>= y 0)` | sat | 1 | branches, but is satisfiable (`x=1,y=0` and `x=-1,y=1` both lie in the strip) |
+
+So the requirements are: **two integer variables**, **coefficients sharing no
+common factor**, **`x` pinned by two inequalities rather than an equality**, and
+**both sides pinned** — with only one side bounded the strip still contains an
+integer point. That gives four assertions; every three-assertion variant tried
+came back `sat`.
+
+*The underlying reason, and a difference from `QF_LRA`.* In the real-arithmetic
+examples above, rows are normalized monic — `2x + 3y <= 15` becomes the row
+`x + 1.5y <= 15/2`. In `QF_LIA` they are **not**: the trace above shows
+`AssertLower(2 (1,0))` / `AssertUpper(2 (2,0))`, so the row keeps its integer
+coefficients. A row with integer coefficients over integer variables always takes
+integer values, so cvc5 rounds any fractional bound on it away — which is exactly
+what defeats the single-variable and common-factor cases above. Branching
+therefore requires the fractionality to land on an **individual variable** rather
+than on a row, and pinning `x` is what forces that.
+
+*A one-constraint variant that branches but is satisfiable:* dropping everything
+except `(assert (>= (+ (* 2 x) (* 3 y)) 1))` gives `sat` with `bb = 1` — simplex
+parks `x` at `1/2` and splits `x <= 0` / `x = 1` / `x >= 2`. Useful as the
+smallest possible trigger, but branching is not load-bearing there since the
+problem is satisfiable.
+
+*Observing branch and bound:*
+```bash
+./build/bin/cvc5 --stats --stats-internal <file>.smt 2>&1 | grep -E 'externalBranchAndBounds|inferencesLemma'
+./build/bin/cvc5 -t arith-round-robin -t arith::lemma <file>.smt   # the split itself
+```
