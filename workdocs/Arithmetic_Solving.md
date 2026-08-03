@@ -74,6 +74,41 @@ arith tags that actually earned their keep:
   Further depth: `theory::arith::pivots::{sat,unsat,unknown}` are per-call
   histograms, and `--collect-pivot-stats` (EXPERTS only) records pivot history.
 
+*Tracing pivots in detail.* The statistic only gives a count; `-t arith::dual`
+prints one line per iteration of the dual simplex loop
+(`dual_simplex.cpp:searchForFeasibleSolution`), which is enough to reconstruct
+the whole walk:
+  ```
+  #1 c0 d-1 f0 h0 2->0
+  ```
+| field | meaning |
+|---|---|
+| `#N` | running pivot count (`d_pivots`) |
+| `cN` | whether `processSignals()` found a conflict right after this pivot — `c1` is always the last line |
+| `dN` | `prevErrorSize - currErrorSize`, i.e. how much the error set shrank; **negative means the pivot broke more rows than it fixed** |
+| `fN` | whether the entering variable is itself now in error |
+| `hN` | whether the entering variable is a conflict variable |
+| `x_i->x_j` | leaving **basic** variable → entering **nonbasic** variable |
+
+  Three companion tags complete the picture:
+  * `-t arith::update::select` prints `selectSmallestInconsistentVar()=N` — which
+    violated basic variable was chosen for repair, before the pivot happens.
+  * `-t arith` prints `update <x_j>: old |-> new`. Careful: `pivotAndUpdate`
+    computes `theta = (bound - beta(x_i)) / a_ij` and applies it to `x_j`, so this
+    line reports the new value of the **entering** variable, not of the row being
+    repaired. The repaired row is simply moved to the bound it violated.
+  * `-t arith::weak` and `-t arith::conflict` then show the Farkas certificate
+    built once the walk ends.
+
+  Putting it together — the walk in `pivot_4.smt` was read off with:
+  ```bash
+  ./build/bin/cvc5 -t arith -t arith::dual -t arith::update::select \
+    workdocs/smt_files/pivot_4.smt 2>&1 | grep -vE '^weak|^Linear'
+  ```
+  Everything is reported in `ArithVar` ids; `setupVariable(N)` lines give the
+  creation order, and `GDB.md` has the `asNode` recipe for turning an id back
+  into a term.
+
 **Following a Simple Example**
 * CVC5: CVC5 debug build built from source, commit `1a010c72cf64ee0c4469eb770f54a689d4820d3f`
   ```bash
@@ -280,3 +315,196 @@ counterexample:
   `AssertUpper`/`AssertLower` before simplex runs. Confirmed with
   `(>= (+ x y) 5)` plus `(<= (+ x y) 2)`: `unsat` with `pivots = 0`. Bounding `x`
   and `y` separately is what forces the solver through the tableau.
+
+**An example that requires 4 pivots**
+
+`smt_files/pivot_4.smt` — `unsat` with `theory::arith::pivots = 4`, using only
+**two** variables:
+```
+(set-logic QF_LRA)
+(declare-const x Real)
+(declare-const y Real)
+(assert (>= (+ x (* 4 y)) 20))
+(assert (<= (+ x (* 2 y)) 10))
+(assert (<= (+ x y) 2))
+(assert (>= (+ x (* 5 y)) 30))
+(assert (<= (+ x (* 6 y)) 35))
+(check-sat)
+```
+Unsatisfiability is easy to see by hand: subtracting row 3 from row 1 gives
+`3y >= 18`, so `y >= 6`; subtracting row 4 from row 5 gives `y <= 5`.
+
+*Rows are normalized monic in `x`.* Every constraint above becomes a row
+`s_g = x + g*y` carrying a single bound. Writing `s_g` for the row with
+`y`-coefficient `g`:
+
+| ArithVar | row | bound |
+|---|---|---|
+| 0 | `x` | — |
+| 1 | `y` | — |
+| 2 | `s_4 = x + 4y` | lower 20 |
+| 3 | `s_2 = x + 2y` | upper 10 |
+| 4 | `s_1 = x + y`  | upper 2 |
+| 5 | `s_5 = x + 5y` | lower 30 |
+| 6 | `s_6 = x + 6y` | upper 35 |
+
+*The tableau coefficients.* With two variables the nonbasic set always has size
+2. Once two rows `s_a` and `s_b` are the nonbasics, every other row is a fixed
+affine combination of them, obtained by solving `s_a = x + a*y`, `s_b = x + b*y`
+for `x` and `y`:
+```
+s_g = ((g-b)/(a-b)) * s_a + ((a-g)/(a-b)) * s_b        [coefficients sum to 1]
+```
+This is what governs whether a violated row can be repaired. A nonbasic sitting
+at its **lower** bound may only increase; one at its **upper** bound may only
+decrease. Reading off the signs, with `s_a` at a lower bound and `s_b` at an
+upper bound (`a > b`):
+
+> a row **below** its lower bound is repairable iff `g > b`;
+> a row **above** its upper bound is repairable iff `g < a`.
+
+So `(b, a)` acts as a **window**, and each pivot replaces one endpoint. Designs
+that keep *shrinking* the window run out of repairable rows after 3 pivots — that
+is why simply adding more constraints, more polygon edges, or more rows never got
+past 3. This instance is built so the window *widens*.
+
+*The walk* (`-t arith::dual`, `#n cCONFLICT dERRORDELTA x_i->x_j`):
+```
+#1 c0 d-1 2->0     repair s_4 -> lb 20, x enters
+#2 c0 d1  3->1     repair s_2 -> ub 10, y enters
+#3 c0 d1  4->2     repair s_1 -> ub 2,  s_4 enters
+#4 c1 d0  6->3     repair s_6 -> ub 35, s_2 enters, then conflict
+```
+Step by step, with the assignment after each pivot:
+
+* **Start** `x=0, y=0`, so every row is 0. Violated: `s_4` (0 < 20) and `s_5`
+  (0 < 30) — 2 errors.
+* **Pivot 1** repairs `s_4`, the smallest-indexed violated variable. Both `x` and
+  `y` are unbounded, so either may enter; `x` is chosen and set to 20. Now every
+  row equals 20, so `s_2` (> 10), `s_1` (> 2) and `s_5` (< 30) are all violated —
+  3 errors, hence `d-1`.
+* **Pivot 2** repairs `s_2`. With `s_4` nonbasic, `s_2 = s_4 - 2y = 20 - 2y`;
+  driving it to its bound 10 gives `y = 5`, and `x = s_4 - 4y = 0`.
+  Rows are now `s_g = 5g`: `s_1 = 5 > 2` and `s_5 = 25 < 30` are violated.
+* **Pivot 3** repairs `s_1`. Nonbasics are `s_4` (lower, 20) and `s_2` (upper,
+  10), so `a = 4`, `b = 2` and
+  `s_1 = ((1-2)/2) s_4 + ((4-1)/2) s_2 = -0.5*s_4 + 1.5*s_2 = -10 + 15 = 5`.
+  It must fall to 2. The `-0.5` coefficient on `s_4` means *raising* `s_4` lowers
+  `s_1`, and `s_4` sits at a lower bound so it is free to rise: `s_4` goes to 26
+  (`-0.5*26 + 15 = 2`). Solving `x + 2y = 10`, `x + y = 2` gives `x = -6, y = 8`.
+  Now `s_5 = 34` is satisfied but `s_6 = 42 > 35` is violated.
+* **Pivot 4** repairs `s_6`. Both nonbasics are now at *upper* bounds — `s_2` (10)
+  and `s_1` (2) — so both may only decrease. With `a = 2`, `b = 1`:
+  `s_6 = ((6-1)/1) s_2 + ((2-6)/1) s_1 = 5*s_2 - 4*s_1 = 50 - 8 = 42`.
+  The `+5` coefficient on `s_2` lets a decrease of `s_2` pull `s_6` down, so `s_2`
+  drops to `43/5 = 8.6` and `s_6` lands on 35.
+* **Conflict.** Nonbasics are now `s_6` (upper, 35) and `s_1` (upper, 2), giving
+  `x + 6y = 35`, `x + y = 2`, so `y = 33/5` and `x = -23/5`. Then
+  `s_5 = ((5-1)/5) s_6 + ((6-5)/5) s_1 = 0.8*s_6 + 0.2*s_1 = 28 + 0.4 = 28.4`,
+  below its lower bound of 30. To raise `s_5` we would have to raise `s_6`
+  (coefficient `+0.8`, but it is at its *upper* bound) or raise `s_1`
+  (coefficient `+0.2`, also at its *upper* bound). Both are blocked, so
+  `checkBasicForConflict` succeeds and the run ends.
+
+The Farkas certificate is that last identity cleared of fractions:
+`4*(x + 6y) + 1*(x + y) = 5*(x + 5y)`, so
+`5*(x + 5y) <= 4*35 + 2 = 142`, i.e. `x + 5y <= 28.4`, contradicting
+`x + 5y >= 30`.
+
+**Findings on the 4 pivot example**
+
+*Which function performs a pivot.* All four pivots go through a single function,
+`LinearEqualityModule::pivotAndUpdate` (`linear_equality.cpp:287`). Captured with:
+```bash
+gdb --batch -x piv4.gdb --args ./build/bin/cvc5 workdocs/smt_files/pivot_4.smt
+# piv4.gdb:
+#   set breakpoint pending on
+#   set confirm off
+#   break cvc5::internal::theory::arith::linear::LinearEqualityModule::pivotAndUpdate
+#   run
+#   bt              # full depth
+```
+
+*Call stack at the first pivot* (`x_i=2 -> x_j=0`), outermost first (line numbers
+as of `e8c0387ca`):
+```
+main                                        main/main.cpp:37
+runCvc5                                     main/driver_unified.cpp:243
+PortfolioDriver::solve                      main/portfolio_driver.cpp:564
+ExecutionContext::solveContinuous           main/portfolio_driver.cpp:66
+CommandExecutor::doCommand                  main/command_executor.cpp:118
+CommandExecutor::doCommandSingleton         main/command_executor.cpp:129
+CommandExecutor::solverInvoke               main/command_executor.cpp:239
+Cmd::invokeAndPrintResult                   parser/commands.cpp:133
+CheckSatCommand::invoke                     parser/commands.cpp:369
+Solver::checkSat                            api/cpp/cvc5.cpp:7299
+SolverEngine::checkSat                      smt/solver_engine.cpp:785
+SolverEngine::checkSatInternal              smt/solver_engine.cpp:822
+SmtDriver::checkSat                         smt/smt_driver.cpp:79
+SmtDriverSingleCall::checkSatNext           smt/smt_driver.cpp:171
+SmtSolver::checkSatInternal                 smt/smt_solver.cpp:134
+PropEngine::checkSat                        prop/prop_engine.cpp:490
+MinisatSatSolver::solve                     prop/minisat/minisat.cpp:223
+SimpSolver::solve                           prop/minisat/simp/SimpSolver.h:275
+SimpSolver::solve_                          prop/minisat/simp/SimpSolver.cc:151
+Solver::solve_                              prop/minisat/core/Solver.cc:1756
+Solver::search                              prop/minisat/core/Solver.cc:1491
+Solver::propagate                           prop/minisat/core/Solver.cc:1186
+Solver::theoryCheck                         prop/minisat/core/Solver.cc:1271
+TheoryProxy::theoryCheck                    prop/theory_proxy.cpp:271
+TheoryEngine::check                         theory/theory_engine.cpp:468
+Theory::check                               theory/theory.cpp:600
+TheoryArith::postCheck                      theory/arith/theory_arith.cpp:255
+LinearSolver::postCheck                     theory/arith/linear/linear_solver.cpp:79
+TheoryArithPrivate::postCheck               theory/arith/linear/theory_arith_private.cpp:3670
+TheoryArithPrivate::solveRealRelaxation     theory/arith/linear/theory_arith_private.cpp:3460
+DualSimplexDecisionProcedure::findModel     theory/arith/linear/dual_simplex.h:73
+DualSimplexDecisionProcedure::dualFindModel theory/arith/linear/dual_simplex.cpp:125
+DualSimplexDecisionProcedure::searchForFeasibleSolution   theory/arith/linear/dual_simplex.cpp:213
+LinearEqualityModule::pivotAndUpdate        theory/arith/linear/linear_equality.cpp:290
+```
+Note that two distinct classes shorten to `Solver::` here — the public API
+`cvc5::Solver` (`api/cpp/cvc5.cpp`) and MiniSat's `cvc5::internal::Minisat::Solver`
+(`prop/minisat/core/Solver.cc`). The file column disambiguates them.
+Every frame from `Theory::check` down carries `EFFORT_STANDARD`, and
+`Solver::propagate` is entered with `CHECK_WITH_THEORY`.
+
+The stack is identical to `basic_conflict.smt` from `findModel` outwards, but
+**diverges inside `dualFindModel`**: here it reaches
+`searchForFeasibleSolution` (`dual_simplex.cpp:125`), whereas the zero-pivot case
+conflicts earlier inside `processSignals` (`dual_simplex.cpp:72`) and never enters
+the pivot loop at all. That fork is the difference between a run that pivots and
+one that does not.
+
+*Two call sites, one per violation direction.* `searchForFeasibleSolution` calls
+`pivotAndUpdate` from two branches, selected by which bound the basic variable
+violates:
+
+| pivot | `x_i -> x_j` | row, violation | call site | entering-variable selector |
+|---|---|---|---|---|
+| #1 | `2 -> 0` | `s_4`, below **lower** bound | `dual_simplex.cpp:213` | `selectSlackUpperBound` |
+| #2 | `3 -> 1` | `s_2`, above **upper** bound | `dual_simplex.cpp:233` | `selectSlackLowerBound` |
+| #3 | `4 -> 2` | `s_1`, above upper bound | `dual_simplex.cpp:233` | `selectSlackLowerBound` |
+| #4 | `6 -> 3` | `s_6`, above upper bound | `dual_simplex.cpp:233` | `selectSlackLowerBound` |
+
+Only `s_4 >= 20` is a lower-bounded row, which is why the lower branch is taken
+exactly once.
+
+*Inside `pivotAndUpdate`.* Three distinct pieces of work:
+```
+theta = (x_i_value - beta(x_i)) / a_ij
+updateTracked(x_j, assignment(x_j) + theta)   linear_equality.cpp:315  -> emits the `update` trace
+++d_statistics.d_statPivots                   linear_equality.cpp:324  -> the theory::arith::pivots stat
+d_tableau.pivot(x_i, x_j, d_trackCallback)    linear_equality.cpp:325  -> the actual basis swap
+```
+The repaired row `x_i` is simply moved to the bound it violated; `theta` is the
+compensating change applied to the *entering* variable `x_j`.
+
+*Two separate pivot counters.* `d_statPivots` (the statistic) is incremented in
+`pivotAndUpdate`, while the loop counter `d_pivots` — the `#N` printed by
+`-t arith::dual` — is incremented in `searchForFeasibleSolution` after
+`processSignals()`. They agree here, but they are not the same variable.
+
+*Iteration budget.* The backtrace shows `remainingIterations` counting down
+`199, 198, 197, 196` across the four pivots, so this call started with a budget of
+200. That is the cap that would truncate a longer walk.
