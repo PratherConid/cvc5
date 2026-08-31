@@ -1,3 +1,51 @@
+**Building**
+* Base build:
+  ```bash
+  ./configure.sh --auto-download
+  cd <build_dir>   # default is ./build
+  make             # use -jN for parallel build with N threads
+  make check       # to run default set of tests
+  make install     # to install into the prefix specified above
+  ```
+* Build type is the optional first argument; the default is `production`
+  (optimized, assertions and tracing **disabled**). For a debug build:
+  ```bash
+  ./configure.sh debug --auto-download
+  ```
+  which is unoptimized (`-Og -fno-inline -ggdb3`) with assertions and tracing
+  enabled. Other types: `testing` (optimized debug build), `competition`,
+  `safe-mode`, `stable-mode`.
+* **Tracing is orthogonal to build type** — `--tracing` / `--no-tracing` can be
+  combined with any of them, as can `--assertions` and `--statistics`. So an
+  optimized build that still supports `-t <tag>`:
+  ```bash
+  ./configure.sh production --tracing --auto-download
+  ```
+  Without tracing, `-t` fails with
+  `trace tags not available in non-tracing builds`.
+  Mechanism: build types set defaults via `cvc5_set_option`
+  (`cmake/Helpers.cmake:193`), which only assigns when the option is still
+  `IGNORE`, so an explicit `--tracing` always wins over
+  `ConfigProduction.cmake`'s `ENABLE_TRACING OFF`. `ENABLE_TRACING` gates
+  `-DCVC5_TRACING` at `CMakeLists.txt:555`.
+* Use `--name=STR` to build into `build-STR` instead of `build`, so several
+  configurations can coexist. Reconfiguring an existing `build/` in place leaves
+  stale artifacts behind (an old `Makefile` when switching to `--ninja`, an
+  orphaned `libcvc5.so` when switching link mode), which is a source of
+  confusing failures.
+* `configure.sh` uses Makefiles by default; pass `--ninja` for Ninja.
+* Gotcha: `cmake --build build --target cvc5` builds the **library**
+  (`libcvc5.a`/`.so`), not the binary — `cvc5` is the library target and
+  `cvc5-bin` is the executable target (with `OUTPUT_NAME cvc5`). Use
+  `make` with no target, `cmake --build build`, or `--target cvc5-bin`.
+
+**Running Benchmarks**
+* Always pass `--stats --stats-internal` to get per-module statistics; note they
+  are written to **stderr**, so capture with `2>&1`.
+* Use the option set `--enum-inst --user-pat=strict --no-cbqi --sat-solver=cadical`.
+* For comparison with z3, use the options `auto_config=false smt.mbqi=false smt.qi.eager_threshold=100.0 smt.delay_units=true smt.arith.nl=false`
+* Zero-valued statistics are omitted; add `--stats-all` to print them explicitly.
+
 **From Entry Point to Theory Solver Invocation**
 * Stage 1
   * `main/main.cpp/main`

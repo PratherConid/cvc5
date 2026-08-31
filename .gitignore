@@ -16,4 +16,4 @@ generated/
 .vscode
 *.pyc
 /ignore
-
+/benchresult

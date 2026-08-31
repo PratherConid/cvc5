@@ -13,6 +13,7 @@
  */
 #include "theory/arith/linear/dio_solver.h"
 
+#include <chrono>
 #include <iostream>
 
 #include "base/output.h"
@@ -461,9 +462,15 @@ bool DioSolver::processEquations(bool allowDecomposition)
 {
   Assert(!inConflict());
 
+  const auto t_begin = std::chrono::steady_clock::now();
+  const size_t nNewInputs =
+      d_inputConstraints.size() - d_nextInputConstraintToEnqueue;
   enqueueInputConstraints();
+  const auto t_enqueued = std::chrono::steady_clock::now();
   Trace("arith::dio::perf")
-      << "processEquations d_currentF initial size = " << d_currentF.size() << endl;
+      << "processEquations d_currentF initial size = " << d_currentF.size()
+      << ", d_subs initial size = " << d_subs.size()
+      << ", new inputs = " << nNewInputs << endl;
   size_t n_directSolve = 0, n_columnGCDOne = 0, n_decomposeIndex = 0;
   while (!queueEmpty() && !inConflict())
   {
@@ -533,10 +540,21 @@ bool DioSolver::processEquations(bool allowDecomposition)
     }
   }
 
+  const auto t_end = std::chrono::steady_clock::now();
   Trace("arith::dio::perf")
-    << "processEquations d_currentF final size = " << d_currentF.size() << ", inConflict = " << inConflict() << endl;
+    << "processEquations d_currentF final size = " << d_currentF.size()
+    << ", d_subs final size = " << d_subs.size() << ", inConflict = " << inConflict() << endl;
   Trace("arith::dio::perf")
     << "processEquations directSolve = " << n_directSolve << ", columnGCDOne = " << n_columnGCDOne << ", decomposeIndex = " << n_decomposeIndex << endl;
+  Trace("arith::dio::perf")
+    << "processEquations enqueue us = "
+    << std::chrono::duration_cast<std::chrono::microseconds>(t_enqueued
+                                                            - t_begin)
+           .count()
+    << ", loop us = "
+    << std::chrono::duration_cast<std::chrono::microseconds>(t_end - t_enqueued)
+           .count()
+    << endl;
   d_currentF.clear();
   return inConflict();
 }
