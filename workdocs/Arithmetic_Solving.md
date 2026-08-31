@@ -349,8 +349,7 @@ both bounds non-zero (e.g. `x <= 1`, `y >= -1`) gives 2 pivots; making both zero
 (`x <= 0`, `y >= 0`) pins everything on arrival and gives 0 pivots, degenerating
 back to the `basic_conflict.smt` case.
 
-*Why it is minimal.* Both bounds are tight, and each was checked against a
-counterexample:
+*Why it is minimal.* Both bounds are tight, and each was checked against a counterexample:
 * **Two variables are required.** A single variable never creates a tableau row,
   so there is no basic variable to pivot out: both `(>= (+ x x) 5)` and
   `(>= (* 2 x) 5)` normalize to a single monomial and give `pivots = 0`.

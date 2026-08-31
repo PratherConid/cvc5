@@ -462,6 +462,9 @@ bool DioSolver::processEquations(bool allowDecomposition)
   Assert(!inConflict());
 
   enqueueInputConstraints();
+  Trace("arith::dio::perf")
+      << "processEquations d_currentF initial size = " << d_currentF.size() << endl;
+  size_t n_directSolve = 0, n_columnGCDOne = 0, n_decomposeIndex = 0;
   while (!queueEmpty() && !inConflict())
   {
     moveMinimumByAbsToQueueFront();
@@ -483,6 +486,7 @@ bool DioSolver::processEquations(bool allowDecomposition)
     std::pair<SubIndex, TrailIndex> p;
     if (canDirectlySolve)
     {
+      ++n_directSolve;
       d_currentF.pop_front();
       p = solveIndex(minimum);
       reduceIndex = minimum;
@@ -493,11 +497,13 @@ bool DioSolver::processEquations(bool allowDecomposition)
 
       if (implied != 0)
       {
+        ++n_columnGCDOne;
         p = solveIndex(implied);
         reduceIndex = implied;
       }
       else if (allowDecomposition)
       {
+        ++n_decomposeIndex;
         d_currentF.pop_front();
         p = decomposeIndex(minimum);
         reduceIndex = minimum;
@@ -527,12 +533,17 @@ bool DioSolver::processEquations(bool allowDecomposition)
     }
   }
 
+  Trace("arith::dio::perf")
+    << "processEquations d_currentF final size = " << d_currentF.size() << ", inConflict = " << inConflict() << endl;
+  Trace("arith::dio::perf")
+    << "processEquations directSolve = " << n_directSolve << ", columnGCDOne = " << n_columnGCDOne << ", decomposeIndex = " << n_decomposeIndex << endl;
   d_currentF.clear();
   return inConflict();
 }
 
 Node DioSolver::processEquationsForConflict()
 {
+  Trace("arith::dio::perf") << "processEquationsForConflict" << endl;
   TimerStat::CodeTimer codeTimer(d_statistics.d_conflictTimer);
   ++(d_statistics.d_conflictCalls);
 
@@ -550,6 +561,7 @@ Node DioSolver::processEquationsForConflict()
 
 SumPair DioSolver::processEquationsForCut()
 {
+  Trace("arith::dio::perf") << "processEquationsForCut" << endl;
   TimerStat::CodeTimer codeTimer(d_statistics.d_cutTimer);
   ++(d_statistics.d_cutCalls);
 
