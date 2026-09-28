@@ -27,6 +27,8 @@ CVC5_KEYS=(
   "theory::arith::updates|cvc5_updates"                    # ~ z3 :arith-make-feasible
   "theory::arith::initialTableauSize|cvc5_initialTableauSize"  # ~ z3 :arith-max-rows
   "Instantiate::Instantiations_Total|cvc5_quant_inst"       # ~ z3 :quant-instantiations
+  "theory::arith::externalBranchAndBounds|cvc5_branch_and_bounds"
+  "theory::arith::dio::cuts|cvc5_dio_cuts"
 )
 # z3: "statistic key (no colon)|column"   (times in seconds)
 Z3_KEYS=(
