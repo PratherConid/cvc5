@@ -15,6 +15,7 @@
 #include "theory/arith/linear/normal_form.h"
 
 #include <list>
+#include <optional>
 
 #include "base/output.h"
 #include "theory/arith/arith_utilities.h"
@@ -523,18 +524,48 @@ Integer Polynomial::denominatorLCM() const
 
 Constant Polynomial::getCoefficient(const VarList& vl) const
 {
-  NodeManager* nm = getNode().getNodeManager();
-  // TODO improve to binary search...
+  // The monomials are strictly sorted by VarList::cmp (see isMember), so the
+  // monomial with VarList vl, if any, can be found by binary search.
+  const Node& n = getNode();
+  size_t lo = 0;
+  size_t hi = singleton() ? 1 : n.getNumChildren();
+  std::optional<Constant> found;
+  while (lo < hi)
+  {
+    size_t mid = lo + (hi - lo) / 2;
+    Monomial m = Monomial::parseMonomial(singleton() ? n : n[mid]);
+    int c = m.getVarList().cmp(vl);
+    if (c == 0)
+    {
+      found = m.getConstant();
+      break;
+    }
+    else if (c < 0)
+    {
+      lo = mid + 1;
+    }
+    else
+    {
+      hi = mid;
+    }
+  }
+
+#ifdef CVC5_ASSERTIONS
+  std::optional<Constant> linear;
   for (iterator iter = begin(), myend = end(); iter != myend; ++iter)
   {
     Monomial m = *iter;
-    VarList curr = m.getVarList();
-    if (curr == vl)
+    if (m.getVarList() == vl)
     {
-      return m.getConstant();
+      linear = m.getConstant();
+      break;
     }
   }
-  return Constant::mkConstant(nm, 0);
+  Assert(found == linear) << "binary search disagrees with linear scan for "
+                          << vl.getNode() << " in " << n;
+#endif
+
+  return found ? *found : Constant::mkConstant(n.getNodeManager(), 0);
 }
 
 Node Polynomial::computeQR(const Polynomial& p, const Integer& div)
