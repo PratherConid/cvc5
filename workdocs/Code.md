@@ -60,7 +60,7 @@
   * `smt/smt_solver.cpp/SmtSolver::checkSatInternal`
   * `prop/prop_engine.cpp/PropEngine::checkSat`
   * `prop/sat_solver.h/SatSolver::solve`. There are four descendents of the `SatSolver` class: `CryptoMinisatSolver, KissatSolver, CDCLTSatSolver, FakeSatSolver`. The default seems to be `CDCLTSatSolver`
-  * There are two descendents of the `CDCLTSatSolver` class: `CadicalSolver, MinisatSatSolver`. The default seems to be `CadicalSolver`
+  * There are two descendents of the `CDCLTSatSolver` class: `CadicalSolver, MinisatSatSolver`. The default is `MinisatSatSolver`: `--sat-solver` defaults to `MINISAT` (`options/prop_options.toml`), and `--sat-solver=cadical` selects `CadicalSolver`. To check which one ran, look at `--stats --stats-internal` output: MiniSat reports `sat::*` statistics and CaDiCaL reports `cadical::*`. `theory::bv::BVSolverBitblast::cadical::*` belongs to the bit-vector bit-blaster's own CaDiCaL instance, not the main solver
 * Stage 3/CadicalSolver (IPASIR-UP)
   * `prop/cadical.h/class CadicalSolver/solver`
   * `prop/cadical.cpp/CadicalSolver::solve`

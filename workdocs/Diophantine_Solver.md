@@ -196,10 +196,21 @@ theory::arith::dio::conflictTimer = 0ms   theory::arith::dio::cutTimer = 0ms
 ```
 Read the **calls-versus-successes ratio**. Above, the solver was asked for a
 conflict twice and found none, then asked for a cut once and found one. If both
-call counters are zero it never ran: check `--dio-solver` and the guard at
-`theory_arith_private.cpp:3904`, which needs `!emmittedConflictOrSplit &&
-fullEffort && !hasIntegerModel()` — the same guard as branch and bound (see the
-`integer?  conf/split C fulleffort F` line under `-t arith`).
+call counters are zero it never ran. Both calls are gated twice in
+`TheoryArithPrivate::postCheck` (line numbers as of `e8c0387ca`):
+
+* The **outer** guard at `theory_arith_private.cpp:3900-3901` requires
+  `!emmittedConflictOrSplit && fullEffort && !hasIntegerModel()`. The same block
+  goes on to branch and bound, so this is the guard reported by the
+  `integer?  conf/split C fulleffort F` line under `-t arith`.
+* **Inner** guards inside that block, one per entry point:
+  * `:3904` — `callDioSolver()` (conflict) needs `!emmittedConflictOrSplit &&
+    --dio-solver`.
+  * `:3936-3937` — `dioCutting()` (cut) also needs `d_hasDoneWorkSinceCut`.
+    It also needs `getDioCuttingResource()` (`:474`), which allows
+    `--dio-turns` rounds of cutting followed by `--rr-turns` rounds without it.
+    So `cutCalls` can be lower than `conflictCalls` even when nothing else
+    changes.
 
 ## 2. What was it actually given?
 
@@ -417,3 +428,62 @@ solved form as substitutions in `d_subs`.
       `allowDecomposition = true`, so `saveQueue()` is unreachable.
 * [ ] Do not chase `nextPureSubstitution` / `d_usedDecomposeIndex` — both are
       vestigial (see section 0).
+
+# Detailed Inspection
+
+## Tracing Substitutions
+
+Requires a tracing build (see `Code.md`). The `arith::dio::perf` tag exists only
+on this branch (commits `c17c93b09a`, `17719456c9`).
+
+```bash
+./build/bin/cvc5 --dag-thresh=0 -t arith::dio -t arith::dio::perf <file>.smt2 2>&1
+```
+
+* `-t arith::dio` prints one line per substitution added to `d_subs`.
+* `-t arith::dio::perf` prints a header line before each call and a per-call
+  summary.
+* `--dag-thresh=0` stops the printer from abbreviating large terms with `let`.
+  Without it, 1180 of 3464 eliminated terms in a Verus benchmark were printed as
+  `(let ...)`, which breaks the sed below.
+
+| line | meaning |
+|---|---|
+| `after solveIndex E for M` | substitution from `solveIndex` (no fresh variable) |
+| `Decompose ci(i:E) for M` | substitution from `decomposeIndex`; `E` contains a fresh `intvar` |
+| `processEquationsForConflict` | the following substitutions are real (`callDioSolver`) |
+| `processEquationsForCut` | the following substitutions are speculative: `dioCutting` runs under a `ScopedPush`, so they are undone when it returns |
+| `processEquations directSolve = a, columnGCDOne = b, decomposeIndex = c` | per-call count of each elimination kind |
+
+How to read a substitution line:
+
+* `M` is the eliminated term. Its coefficient is ±1, so it may print as
+  `(* (- 1) t)`.
+* `E` is the stored equation, normalized so that `t` has coefficient −1. It
+  reads as `t := E + t`. For example,
+  `after solveIndex (+ (* (- 1) x) 1) for x` means `x := 1`.
+* `t` is a normal-form leaf
+
+Only newly derived substitutions are printed. Earlier ones stay in `d_subs`
+without being printed until SAT backtracking removes them, and are then
+re-derived and re-printed on a later call.
+
+Count substitutions by call type:
+
+```bash
+./build/bin/cvc5 --dag-thresh=0 -t arith::dio -t arith::dio::perf <file>.smt2 2>&1 \
+  | awk '$0=="processEquationsForConflict"{m="conflict"} $0=="processEquationsForCut"{m="cut"}
+         /^after solveIndex |^Decompose ci\(/{n[m]++} END{for(k in n) print k, n[k]}'
+```
+
+List the eliminated terms:
+
+```bash
+./build/bin/cvc5 --dag-thresh=0 -t arith::dio <file>.smt2 2>&1 \
+  | grep -E '^after solveIndex |^Decompose ci\(' \
+  | sed -E 's/.* for //; s/^\(\* \(- 1\) (.*)\)$/\1/' | sort | uniq -c | sort -rn
+```
+
+`DioSolver::printQueue()` would dump all of `d_trail` and `d_subs`, but nothing
+calls it, so use a gdb breakpoint on `DioSolver::solveIndex` /
+`DioSolver::decomposeIndex` to inspect the full set.
