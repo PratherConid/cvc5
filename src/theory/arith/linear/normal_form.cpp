@@ -525,19 +525,20 @@ Integer Polynomial::denominatorLCM() const
 Constant Polynomial::getCoefficient(const VarList& vl) const
 {
   // The monomials are strictly sorted by VarList::cmp (see isMember), so the
-  // monomial with VarList vl, if any, can be found by binary search.
-  const Node& n = getNode();
+  // monomial with VarList vl, if any, can be found by binary search. Probes
+  // only read the VarList; the coefficient is built once, on a match.
+  TNode n = getNode();
   size_t lo = 0;
   size_t hi = singleton() ? 1 : n.getNumChildren();
   std::optional<Constant> found;
   while (lo < hi)
   {
     size_t mid = lo + (hi - lo) / 2;
-    Monomial m = Monomial::parseMonomial(singleton() ? n : n[mid]);
-    int c = m.getVarList().cmp(vl);
+    TNode child = singleton() ? n : n[mid];
+    int c = Monomial::parseVarListOf(child).cmp(vl);
     if (c == 0)
     {
-      found = m.getConstant();
+      found = Monomial::parseMonomial(child).getConstant();
       break;
     }
     else if (c < 0)

@@ -694,6 +694,20 @@ class Monomial : public NodeWrapper
 
   static Monomial parseMonomial(Node n);
 
+  /**
+   * Returns the VarList of the monomial n, as parseMonomial(n).getVarList()
+   * would, but without constructing the monomial or its coefficient.
+   */
+  static VarList parseVarListOf(TNode n)
+  {
+    Kind k = n.getKind();
+    if (k == Kind::CONST_RATIONAL || k == Kind::CONST_INTEGER)
+    {
+      return VarList::mkEmptyVarList();
+    }
+    return VarList::parseVarList(multStructured(n) ? n[1] : n);
+  }
+
   static Monomial mkZero(NodeManager* nm)
   {
     return Monomial(Constant::mkConstant(nm, 0));
