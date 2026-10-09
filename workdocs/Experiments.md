@@ -20,8 +20,8 @@
 
 **Potential Optimizations**
 * Report DIO substitutions to the main solver. Today `d_subs` never leaves the
-  DIO solver, and the intended `nextPureSubstitution` API has been a stub since
-  1.    Substitutions generally cannot be applied as rewrites mid-search,
+  DIO solver, and the intended `nextPureSubstitution` API has been a stub
+  since 2012. Substitutions generally cannot be applied as rewrites mid-search,
   because the eliminated "variables" are normal-form leaves: on 10 Mariposa
   benchmarks, 85% were UF/selector applications, 12% 0-ary constants and 3%
   nonlinear products. Instead, export them as entailed equalities, explained by
