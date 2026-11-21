@@ -6,6 +6,13 @@
 * Zero-valued statistics are omitted; add `--stats-all` to print them explicitly.
 
 **Attempted Optimizations**
+* Node-free DIO arithmetic (branch `dio-optimize`, build `buildDioLinear`):
+  `DioSolver` uses a new `DioLinearForm`, a sorted vector of (variable id,
+  coefficient) pairs, instead of `Polynomial`/`SumPair`; proofs are forms over
+  input-constraint indices. Without the `getCoefficient` changes below.
+  `make check` and `make regress` pass. On the 107 benchmarks vs. upstream main
+  (`build/`): 72 → 79 solved, none lost; on the 72 solved by both, −24% total
+  time and −97% DIO solver time.
 * Skip non-overlapping substitutions in `dio_solver.cpp`: where an equation is
   reduced by every substitution in `d_subs`, skip those whose variables do not
   overlap the equation's. No significant change in total or DIO solver time.
