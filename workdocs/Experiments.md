@@ -45,3 +45,37 @@
 
   Start with `t = c` and `t = u` forms after back-substitution, which create no
   new terms.
+
+**Finding Optimization Targets**
+
+The workflow that found the DIO optimization, for any component of cvc5:
+1. Rank components across benchmarks. Run the benchmark list with
+   `benchanalysis/runbench.sh` and divide each component's timer by
+   `global::totalTime`, as in the triage spreadsheet (e.g.
+   `theory::<theory>::checkTime`, `theory::QuantifiersEngine::time_ematching`,
+   `prop::CnfStream::cnfConversionTime`,
+   `smt::SolverEngine::processAssertionsTime`). Timers nest and leave gaps:
+   `theory::arith::checkTime` contains the DIO timers, and work done outside a
+   timer's scope (e.g. building the DIO solver's inputs) is not counted.
+2. Pick a benchmark where the component takes a large share and that runs for
+   5–15 s, plus one where its share is near zero for contrast.
+3. Profile both with `perf` (`workdocs/Profiling.md`). Start from the
+   component's entry point and use `stacks.py` to descend to the functions
+   that dominate. Leaders in self time tell you whether the cost is the
+   algorithm or the data representation: for DIO it was `Node` reference
+   counting, GMP copies and `getType` lookups, not the elimination itself.
+4. Estimate the payoff before writing code: the component's share of total
+   time times the reduction you expect. Profile first; the `getCoefficient`
+   binary search was written before profiling and gained little.
+5. Implement on a separate branch and build directory, then run `make check`
+   and `make regress`.
+6. Measure against a fresh baseline built from the same base commit, with the
+   same benchmark list and options and nothing else running on the machine.
+   Compare solved counts, then total and component time on the benchmarks
+   both solve. Benchmarks that never use the component are the noise control:
+   their work counters (pivots, propagations, conflicts) should be identical.
+   A change that creates fewer `Node`s shifts node ids, which can change the
+   search elsewhere even when the component behaves identically.
+
+`baseExprCmp.sh` extracts the arithmetic and DIO timers only; for another
+component, change the statistic names it reads.

@@ -64,12 +64,12 @@ else
   paths=$(grep -v '^\s*$' "$LIST")
 fi
 
-# "path|stem" per benchmark. The perftable paths still carry the old
-# sundance/ prefix; UFDTLIA/ and UFDTNIA/ now live directly under BASE.
+# "path|stem" per benchmark. The perftable paths are relative to BASE, which
+# holds sundance/ (all four UF*DT* sets) and verus-no-option/.
 jobs=()
 missing=0
 while IFS= read -r p; do
-  rel=${p#./}; rel=${rel#sundance/}
+  rel=${p#./}
   stem=$(basename "$rel" .smt2)
   case "$stem" in
     'bin_sizeslib!bin_sizes.div2._01') stem="$(basename "$(dirname "$rel")")__$stem" ;;
