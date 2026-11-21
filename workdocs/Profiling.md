@@ -26,9 +26,13 @@ is all that is needed here.
 ## 2. Record
 
 ```bash
-$P record -F 999 --call-graph dwarf,16384 -o perf.data <program> <args>
+$P record -F 999 --user-callchains --call-graph dwarf,16384 -o perf.data <program> <args>
 ```
 * `-F 999` takes about 1000 samples per second.
+* `--user-callchains` records only user-space call stacks. Since the WSL kernel
+  update to 6.18.58, any call-graph mode fails without it at
+  `perf_event_paranoid=2`, with "Access to performance monitoring and
+  observability operations is limited".
 * `--call-graph dwarf,16384` records call stacks by unwinding with DWARF info,
   copying 16 KB of stack per sample. The build is compiled without frame
   pointers, so `-g` (frame-pointer unwinding) is likely to give truncated
